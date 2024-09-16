@@ -1,0 +1,157 @@
+!pip install streamlit pyngrok tensorflow scikit-learn
+streamlit_script = """
+import streamlit as st
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from sklearn.metrics import r2_score, accuracy_score
+
+# Streamlit başlığı
+st.title("Data Corrector with AI")
+
+# Train ve Test verilerini yükleme
+train_file = st.file_uploader("Upload your train CSV", type=["csv"])
+test_file = st.file_uploader("Upload your test CSV", type=["csv"])
+
+if train_file and test_file:
+    train_df = pd.read_csv(train_file)
+    test_df = pd.read_csv(test_file)
+
+    # Segmentation sütununu kaldırma
+    if 'Segmentation' in train_df.columns:
+        train_df = train_df.drop(columns=['Segmentation'])
+    if 'Segmentation' in test_df.columns:
+        test_df = test_df.drop(columns=['Segmentation'])
+
+    st.write("Train Data", train_df.head())
+    st.write("Test Data", test_df.head())
+
+    # Kategorik ve sayısal sütunları belirleme
+    categorical_columns = [col for col in train_df.columns if train_df[col].dtype == 'object']
+    numeric_columns = [col for col in train_df.columns if train_df[col].dtype != 'object']
+
+    # Eksik değerleri doldurma
+    def fill_missing_values(train_df, test_df, column, model_type):
+        # Eğitim verilerinde eksik olmayan ve eksik olan verileri ayırma
+        not_null_train = train_df[train_df[column].notnull()]
+        is_null_train = train_df[train_df[column].isnull()]
+
+        if is_null_train.empty:
+            return train_df, test_df, None
+
+        if model_type == "numeric":
+            model = RandomForestRegressor()
+            X_train = not_null_train.drop(columns=[column])
+            y_train = not_null_train[column]
+            X_test = is_null_train.drop(columns=[column])
+        else:
+            model = RandomForestClassifier()
+            le = LabelEncoder()
+            y_train = le.fit_transform(not_null_train[column].astype(str))
+            X_train = not_null_train.drop(columns=[column])
+            X_test = is_null_train.drop(columns=[column])
+
+        # Kategorik veriler için One-Hot Encoding
+        X_train = pd.get_dummies(X_train, drop_first=True)
+        X_test = pd.get_dummies(X_test, drop_first=True)
+
+        # Train ve Test veri setlerinde aynı sütunların olmasını sağlama
+        X_train, X_test = X_train.align(X_test, join='left', axis=1, fill_value=0)
+
+        # Eksik değerleri doldurma
+        imputer = SimpleImputer(strategy='mean' if model_type == "numeric" else 'most_frequent')
+        X_train = pd.DataFrame(imputer.fit_transform(X_train), columns=X_train.columns)
+        X_test = pd.DataFrame(imputer.transform(X_test), columns=X_test.columns)
+
+        # Modeli eğitme ve tahmin yapma
+        model.fit(X_train, y_train)
+        predictions = model.predict(X_test)
+
+        if model_type == "categorical":
+            predictions = le.inverse_transform(predictions)
+
+        # Tahmin edilen değerlerle eksik değerleri doldurma
+        train_df.loc[train_df[column].isnull(), column] = predictions
+
+        # Model performansını değerlendirme
+        if model_type == "numeric":
+            performance = r2_score(y_train, model.predict(X_train))
+        else:
+            performance = accuracy_score(y_train, model.predict(X_train))
+
+        # Aynı işlemi test verileri için yapma
+        X_test = test_df[test_df[column].isnull()].drop(columns=[column])
+        if X_test.empty:
+            return train_df, test_df, performance
+
+        X_test = pd.get_dummies(X_test, drop_first=True)
+        X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
+        X_test = pd.DataFrame(imputer.transform(X_test), columns=X_test.columns)
+        predictions = model.predict(X_test)
+
+        if model_type == "categorical":
+            predictions = le.inverse_transform(predictions)
+
+        test_df.loc[test_df[column].isnull(), column] = predictions
+
+        return train_df, test_df, performance
+
+    performances = []
+
+    for column in numeric_columns:
+        train_df, test_df, performance = fill_missing_values(train_df, test_df, column, "numeric")
+        if performance is not None:
+            performances.append((column, "numeric", performance))
+
+    for column in categorical_columns:
+        train_df, test_df, performance = fill_missing_values(train_df, test_df, column, "categorical")
+        if performance is not None:
+            performances.append((column, "categorical", performance))
+
+    st.write("Test Data with Predictions", test_df)
+
+    if performances:
+        st.write("Model Performance:")
+        for column, model_type, performance in performances:
+            if model_type == "numeric":
+                st.write(f"Column: {column}, Type: {model_type}, R^2 Score: {performance:.2f}")
+            else:
+                st.write(f"Column: {column}, Type: {model_type}, Accuracy Score: {performance:.2f}")
+
+"""
+
+
+
+with open("app.py", "w") as file:
+    file.write(streamlit_script)
+
+
+from pyngrok import ngrok
+
+
+ngrok.set_auth_token('2h1B1r7cYTPmC21ZdQuONKm5S7F_3nah5rUgfzY3LrgP9o1Hw')
+
+
+tunnels = ngrok.get_tunnels()
+for tunnel in tunnels:
+    ngrok.disconnect(tunnel.public_url)
+
+print("Tüm tüneller kapatıldı.")
+
+
+public_url = ngrok.connect(8501)
+print("Streamlit app will be available on:", public_url)
+
+
+!streamlit run app.py &
+
+
+import time
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    print("Shutting down ngrok tunnel...")
+    ngrok.disconnect(public_url)
+    ngrok.kill()
